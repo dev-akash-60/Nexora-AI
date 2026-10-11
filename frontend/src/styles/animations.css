@@ -1,0 +1,41 @@
+@keyframes reveal-up {
+    from {
+        opacity: 0;
+        transform: translateY(16px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes ambient-drift {
+    from {
+        transform: translate3d(-12px, 0, 0) scale(1);
+    }
+
+    to {
+        transform: translate3d(30px, 35px, 0) scale(1.12);
+    }
+}
+
+@keyframes soft-pulse {
+
+    0%,
+    100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+
+    50% {
+        opacity: 0.5;
+        transform: scale(0.8);
+    }
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
