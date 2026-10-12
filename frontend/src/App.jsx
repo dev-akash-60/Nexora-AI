@@ -56,13 +56,15 @@ function App() {
 
       <header className="topbar">
         <a className="brand" href="#home">
-          <div className="brand-mark">
-            <BrainCircuit size={23} strokeWidth={1.7} />
-          </div>
+          <img
+            src="/src/assets/Nexora%20AI%20logo.png"
+            alt="Nexora AI Logo"
+            className="brand-logo"
+          />
 
           <div className="brand-copy">
             <span className="brand-name">
-              nexora<span>ai</span>
+              Nexora<span> Ai</span>
             </span>
             <span className="brand-caption">
               PERSONAL INTELLIGENCE
