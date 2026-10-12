@@ -127,10 +127,10 @@ function VoiceOrb({ state, onToggle }) {
                     repeat: speaking ? Infinity : 0,
                 }}
             >
-                {Array.from({ length: 17 }, (_, index) => (
+                {Array.from({ length: 9 }, (_, index) => (
                     <motion.span
                         key={index}
-                        animate={
+                        /*animate={
                             speaking
                                 ? {
                                     scaleY: [
@@ -149,10 +149,23 @@ function VoiceOrb({ state, onToggle }) {
                                     }
                                     : { scaleY: 0.2 }
                         }
+                        
                         transition={{
                             duration: 0.55 + (index % 5) * 0.12,
                             repeat: active ? Infinity : 0,
                             delay: index * 0.035,
+                            ease: "easeInOut",
+                        }}*/
+                        animate={{
+                            scale: speaking
+                                ? [1, 1.015, 1]
+                                : listening
+                                    ? [1, 1.008, 1]
+                                    : 1,
+                        }}
+                        transition={{
+                            duration: speaking ? 1.6 : 2.8,
+                            repeat: active ? Infinity : 0,
                             ease: "easeInOut",
                         }}
                     />

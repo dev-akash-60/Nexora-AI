@@ -14,6 +14,7 @@ import {
   Zap,
 } from "lucide-react";
 
+import nexoraLogo from "./assets/Nexora AI logo.png"; 
 import VoiceOrb from "./components/VoiceOrb";
 import Waveform from "./components/Waveform";
 import ConversationPanel from "./components/ConversationPanel";
@@ -57,7 +58,7 @@ function App() {
       <header className="topbar">
         <a className="brand" href="#home">
           <img
-            src="/src/assets/Nexora%20AI%20logo.png"
+            src={nexoraLogo}
             alt="Nexora AI Logo"
             className="brand-logo"
           />

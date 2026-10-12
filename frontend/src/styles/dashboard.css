@@ -2487,3 +2487,56 @@ button:disabled {
         --inner-ring-top:
     }
 }
+/* ==========================================
+   NEXORA: MOBILE SCROLL & ANIMATION OPTIMIZATION
+   Desktop styles remain unchanged.
+========================================== */
+
+@media (max-width: 760px) {
+
+    /* Reduce expensive glass effects */
+    .glass-card,
+    .voice-card,
+    .conversation-card,
+    .composer-card {
+        -webkit-backdrop-filter: none !important;
+        backdrop-filter: none !important;
+    }
+
+    /* Reduce expensive glow rendering */
+    .orb-stage,
+    .orb-backdrop {
+        filter: none;
+    }
+
+    .voice-orb-container .orb-ring,
+    .voice-orb-container .avatar-halo {
+        filter: none !important;
+        box-shadow: none;
+    }
+
+    /* Disable decorative scanline movement */
+    .voice-orb-container .avatar-scanline {
+        animation: none !important;
+    }
+
+    /* Keep the avatar image rendering efficiently */
+    .voice-orb-container .ai-avatar-image {
+        backface-visibility: hidden;
+    }
+
+    /* Avoid unnecessary animation layer hints */
+    .voice-orb-container .orb-ring,
+    .voice-orb-container .avatar-halo,
+    .voice-orb-container .avatar-sound-wave span {
+        will-change: auto;
+    }
+
+    /* Lighter shadows during scrolling */
+    .glass-card,
+    .voice-card,
+    .conversation-card,
+    .composer-card {
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.22);
+    }
+}
