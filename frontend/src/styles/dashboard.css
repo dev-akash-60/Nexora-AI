@@ -1349,6 +1349,15 @@ a:focus-visible {
         gap: 12px;
     }
 }
+.orb-loading-icon {
+    animation: orb-icon-spin 1.2s linear infinite;
+}
+
+@keyframes orb-icon-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
 
 @media (prefers-reduced-motion: reduce) {
 

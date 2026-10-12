@@ -1,21 +1,20 @@
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createVoiceConnection } from "../services/voiceService";
 
-const TARGET_SAMPLE_RATE = 16000;
+const INPUT_SAMPLE_RATE = 16000;
 const OUTPUT_SAMPLE_RATE = 24000;
-const PLAYBACK_LEAD_SECONDS = 0.08;
+const PLAYBACK_LEAD_SECONDS = 0.025;
 
 function downsampleTo16k(input, inputSampleRate) {
-    if (inputSampleRate === TARGET_SAMPLE_RATE) {
+    if (inputSampleRate === INPUT_SAMPLE_RATE) {
         return input;
     }
 
-    if (inputSampleRate < TARGET_SAMPLE_RATE) {
+    if (inputSampleRate < INPUT_SAMPLE_RATE) {
         throw new Error("Microphone sample rate is below 16 kHz.");
     }
 
-    const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
+    const ratio = inputSampleRate / INPUT_SAMPLE_RATE;
     const outputLength = Math.floor(input.length / ratio);
     const output = new Float32Array(outputLength);
 
@@ -44,10 +43,9 @@ function floatTo16BitPCM(input) {
     for (let i = 0; i < input.length; i++) {
         const sample = Math.max(-1, Math.min(1, input[i]));
 
-        pcm[i] =
-            sample < 0
-                ? Math.round(sample * 32768)
-                : Math.round(sample * 32767);
+        pcm[i] = sample < 0
+            ? Math.round(sample * 32768)
+            : Math.round(sample * 32767);
     }
 
     return pcm;
@@ -117,19 +115,21 @@ export function useVoiceAgent() {
     const socketRef = useRef(null);
     const streamRef = useRef(null);
     const audioContextRef = useRef(null);
+
     const sourceRef = useRef(null);
-    const workletRef = useRef(null);
+    const processorRef = useRef(null);
+    const filterRef = useRef(null);
     const silentGainRef = useRef(null);
 
     const playbackSourcesRef = useRef(new Set());
     const nextPlaybackTimeRef = useRef(0);
     const speakingRef = useRef(false);
+    const audioQueueRef = useRef([]);
+    const playbackGenerationRef = useRef(0);
+
     const currentAssistantMessageRef = useRef(null);
     const currentUserMessageRef = useRef(null);
     const statusRef = useRef("disconnected");
-    const audioQueueRef = useRef([]);
-    const isProcessingAudioRef = useRef(false);
-    const playbackGenerationRef = useRef(0);
 
     const updateStatus = useCallback((value) => {
         statusRef.current = value;
@@ -164,7 +164,6 @@ export function useVoiceAgent() {
     }, []);
 
     const stopPlayback = useCallback(() => {
-        // Invalidate any pending playback work.
         playbackGenerationRef.current += 1;
 
         for (const source of playbackSourcesRef.current) {
@@ -178,114 +177,44 @@ export function useVoiceAgent() {
 
         playbackSourcesRef.current.clear();
         audioQueueRef.current = [];
-        isProcessingAudioRef.current = false;
         nextPlaybackTimeRef.current = 0;
         speakingRef.current = false;
     }, []);
 
-    const scheduleAudioBuffer = useCallback(
-        (audioBuffer) => {
-            const audioContext = audioContextRef.current;
-
-            if (
-                !audioContext ||
-                audioContext.state === "closed"
-            ) {
-                return;
-            }
-
-            const source = audioContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(audioContext.destination);
-
-            // Schedule this chunk directly after the previous chunk.
-            // A short lead time helps avoid starting too close to "now".
-            const startAt = Math.max(
-                audioContext.currentTime + PLAYBACK_LEAD_SECONDS,
-                nextPlaybackTimeRef.current,
-            );
-
-            const generation = playbackGenerationRef.current;
-
-            playbackSourcesRef.current.add(source);
-            speakingRef.current = true;
-            updateVoiceState("speaking");
-
-            nextPlaybackTimeRef.current =
-                startAt + audioBuffer.duration;
-
-            source.onended = () => {
-                playbackSourcesRef.current.delete(source);
-
-                // Ignore callbacks from playback that was cancelled.
-                if (generation !== playbackGenerationRef.current) {
-                    return;
-                }
-
-                // Do not switch to listening while future chunks
-                // are still queued or scheduled.
-                if (
-                    playbackSourcesRef.current.size === 0 &&
-                    audioQueueRef.current.length === 0 &&
-                    !isProcessingAudioRef.current
-                ) {
-                    speakingRef.current = false;
-                    nextPlaybackTimeRef.current = 0;
-
-                    if (statusRef.current === "connected") {
-                        updateVoiceState("listening");
-                    }
-                }
-            };
-
-            source.start(startAt);
-        },
-        [updateVoiceState],
-    );
-
-    const processAudioQueue = useCallback(() => {
-        if (isProcessingAudioRef.current) {
-            return;
-        }
-
+    const scheduleAudioBuffer = useCallback((audioBuffer) => {
         const audioContext = audioContextRef.current;
 
         if (
             !audioContext ||
             audioContext.state === "closed"
         ) {
-            audioQueueRef.current = [];
             return;
         }
 
-        isProcessingAudioRef.current = true;
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
 
-        try {
-            while (audioQueueRef.current.length > 0) {
-                const base64 = audioQueueRef.current.shift();
+        const startAt = Math.max(
+            audioContext.currentTime + PLAYBACK_LEAD_SECONDS,
+            nextPlaybackTimeRef.current,
+        );
 
-                const currentContext = audioContextRef.current;
+        const generation = playbackGenerationRef.current;
 
-                if (
-                    !currentContext ||
-                    currentContext.state === "closed"
-                ) {
-                    audioQueueRef.current = [];
-                    break;
-                }
+        playbackSourcesRef.current.add(source);
+        speakingRef.current = true;
+        updateVoiceState("speaking");
 
-                const audioBuffer = decodePcm16(
-                    base64,
-                    currentContext,
-                );
+        nextPlaybackTimeRef.current =
+            startAt + audioBuffer.duration;
 
-                scheduleAudioBuffer(audioBuffer);
+        source.onended = () => {
+            playbackSourcesRef.current.delete(source);
+
+            if (generation !== playbackGenerationRef.current) {
+                return;
             }
-        } catch (err) {
-            console.error("Audio playback failed:", err);
-            setError("Audio playback failed. Check the browser console.");
-        } finally {
-            isProcessingAudioRef.current = false;
 
             if (
                 playbackSourcesRef.current.size === 0 &&
@@ -298,136 +227,167 @@ export function useVoiceAgent() {
                     updateVoiceState("listening");
                 }
             }
+        };
+
+        source.start(startAt);
+    }, [updateVoiceState]);
+
+    const playAudioChunk = useCallback((message) => {
+        if (!message?.data) return;
+
+        // This playback path expects raw PCM, not MP3 or another codec.
+        const mimeType = (message.mime_type || "").toLowerCase();
+
+        if (mimeType && !mimeType.includes("audio/pcm")) {
+            console.warn(
+                "Ignoring unsupported audio format:",
+                message.mime_type,
+            );
+            return;
         }
-    }, [scheduleAudioBuffer, updateVoiceState]);
 
-    const playAudioChunk = useCallback(
-        (base64) => {
-            if (!base64) return;
+        const audioContext = audioContextRef.current;
 
-            const audioContext = audioContextRef.current;
+        if (
+            !audioContext ||
+            audioContext.state === "closed"
+        ) {
+            return;
+        }
 
-            if (
-                !audioContext ||
-                audioContext.state === "closed"
-            ) {
-                return;
-            }
+        audioQueueRef.current.push(message.data);
 
-            audioQueueRef.current.push(base64);
-            processAudioQueue();
-        },
-        [processAudioQueue],
-    );
+        if (audioQueueRef.current.length > 200) {
+            audioQueueRef.current = [];
+            stopPlayback();
+            setError("Audio playback fell behind. Please reconnect.");
+            return;
+        }
 
-    const handleServerMessage = useCallback(
-        async (event) => {
-            let message;
-
+        if (audioQueueRef.current.length === 1) {
             try {
-                message = JSON.parse(event.data);
-            } catch {
-                return;
+                while (audioQueueRef.current.length > 0) {
+                    const base64 = audioQueueRef.current.shift();
+                    const buffer = decodePcm16(base64, audioContext);
+
+                    scheduleAudioBuffer(buffer);
+                }
+            } catch (err) {
+                console.error("Audio playback failed:", err);
+                stopPlayback();
+                setError("Audio playback failed. Check the browser console.");
             }
+        }
+    }, [scheduleAudioBuffer, stopPlayback]);
 
-            switch (message.type) {
-                case "status": {
-                    if (message.message?.startsWith("Connected")) {
-                        updateStatus("connected");
-                        updateVoiceState("listening");
-                    }
-                    break;
-                }
+    const handleServerMessage = useCallback((event) => {
+        let message;
 
-                case "input_transcription": {
-                    if (!message.text) break;
+        try {
+            message = JSON.parse(event.data);
+        } catch {
+            return;
+        }
 
-                    const existingId = currentUserMessageRef.current;
-
-                    if (existingId) {
-                        setMessages((previous) =>
-                            previous.map((item) =>
-                                item.id === existingId
-                                    ? {
-                                        ...item,
-                                        text: item.text + message.text,
-                                    }
-                                    : item,
-                            ),
-                        );
-                    } else {
-                        currentUserMessageRef.current = addMessage(
-                            "user",
-                            message.text,
-                        );
-                    }
-
-                    break;
-                }
-
-                case "output_transcription": {
-                    if (!message.text) break;
-
-                    if (currentAssistantMessageRef.current) {
-                        setMessages((previous) =>
-                            previous.map((item) =>
-                                item.id === currentAssistantMessageRef.current
-                                    ? {
-                                        ...item,
-                                        text: item.text + message.text,
-                                    }
-                                    : item,
-                            ),
-                        );
-                    } else {
-                        currentAssistantMessageRef.current = addMessage(
-                            "assistant",
-                            message.text,
-                        );
-                    }
-
-                    break;
-                }
-
-                case "audio": {
-                    if (message.data) {
-                        playAudioChunk(message.data);
-                    }
-                    break;
-                }
-
-                case "turn_complete": {
-                    currentUserMessageRef.current = null;
-                    currentAssistantMessageRef.current = null;
-                    break;
-                }
-
-                case "interrupted": {
-                    stopPlayback();
+        switch (message.type) {
+            case "status": {
+                if (message.message?.startsWith("Connected")) {
+                    setError("");
+                    updateStatus("connected");
                     updateVoiceState("listening");
-                    break;
                 }
-
-                case "error": {
-                    setError(
-                        message.message ||
-                        "An unexpected error occurred.",
-                    );
-                    break;
-                }
-
-                default:
-                    break;
+                break;
             }
-        },
-        [
-            addMessage,
-            playAudioChunk,
-            stopPlayback,
-            updateStatus,
-            updateVoiceState,
-        ],
-    );
+
+            case "input_transcription": {
+                const text = message.text || "";
+                if (!text) break;
+
+                const existingId = currentUserMessageRef.current;
+
+                if (existingId) {
+                    setMessages((previous) =>
+                        previous.map((item) =>
+                            item.id === existingId
+                                ? { ...item, text: item.text + text }
+                                : item,
+                        ),
+                    );
+                } else {
+                    currentUserMessageRef.current =
+                        addMessage("user", text);
+                }
+                break;
+            }
+
+            case "output_transcription": {
+                const text = message.text || "";
+                if (!text) break;
+
+                const existingId = currentAssistantMessageRef.current;
+
+                if (existingId) {
+                    setMessages((previous) =>
+                        previous.map((item) =>
+                            item.id === existingId
+                                ? { ...item, text: item.text + text }
+                                : item,
+                        ),
+                    );
+                } else {
+                    currentAssistantMessageRef.current =
+                        addMessage("assistant", text);
+                }
+                break;
+            }
+
+            case "audio": {
+                playAudioChunk(message);
+                break;
+            }
+
+            case "turn_complete": {
+                currentUserMessageRef.current = null;
+                currentAssistantMessageRef.current = null;
+
+                // Do not force listening here: final audio may still play.
+                if (
+                    playbackSourcesRef.current.size === 0 &&
+                    audioQueueRef.current.length === 0 &&
+                    statusRef.current === "connected"
+                ) {
+                    speakingRef.current = false;
+                    updateVoiceState("listening");
+                }
+                break;
+            }
+
+            case "interrupted": {
+                stopPlayback();
+
+                if (statusRef.current === "connected") {
+                    updateVoiceState("listening");
+                }
+                break;
+            }
+
+            case "error": {
+                setError(
+                    message.message || "An unexpected error occurred.",
+                );
+                break;
+            }
+
+            default:
+                break;
+        }
+    }, [
+        addMessage,
+        playAudioChunk,
+        stopPlayback,
+        updateStatus,
+        updateVoiceState,
+    ]);
 
     const start = useCallback(async () => {
         if (
@@ -441,26 +401,21 @@ export function useVoiceAgent() {
         updateStatus("connecting");
         updateVoiceState("connecting");
 
-        let socket;
+        let socket = null;
 
         try {
             if (!navigator.mediaDevices?.getUserMedia) {
                 throw new Error(
-                    "Microphone access requires localhost or HTTPS.",
+                    "Microphone access requires HTTPS or localhost.",
                 );
             }
 
-            const audioContext = new AudioContext();
+            const audioContext = new AudioContext({
+                latencyHint: "interactive",
+            });
 
             audioContextRef.current = audioContext;
-
             await audioContext.resume();
-
-            if (audioContext.state !== "running") {
-                throw new Error(
-                    "Audio playback is not available. Check browser audio permissions.",
-                );
-            }
 
             const stream = await navigator.mediaDevices.getUserMedia({
                 audio: {
@@ -476,13 +431,20 @@ export function useVoiceAgent() {
             const source = audioContext.createMediaStreamSource(stream);
             sourceRef.current = source;
 
+            // Reduce low-frequency rumble from fans, desks, and handling noise.
+            const highPass = audioContext.createBiquadFilter();
+            highPass.type = "highpass";
+            highPass.frequency.value = 80;
+            highPass.Q.value = 0.707;
+            filterRef.current = highPass;
+
             const processor = audioContext.createScriptProcessor(
                 2048,
                 1,
                 1,
             );
 
-            workletRef.current = processor;
+            processorRef.current = processor;
 
             const silentGain = audioContext.createGain();
             silentGain.gain.value = 0;
@@ -493,50 +455,64 @@ export function useVoiceAgent() {
 
                 if (
                     !activeSocket ||
-                    activeSocket.readyState !== WebSocket.OPEN
+                    activeSocket.readyState !== WebSocket.OPEN ||
+                    statusRef.current !== "connected"
                 ) {
                     return;
                 }
 
-                if (
-                    statusRef.current !== "connected" ||
-                    speakingRef.current
-                ) {
+                // Avoid sending speaker playback back into the model.
+                // The state is reset when scheduled audio finishes.
+                if (speakingRef.current) {
                     return;
                 }
 
-                const input = event.inputBuffer.getChannelData(0);
+                try {
+                    const input = event.inputBuffer.getChannelData(0);
 
-                const downsampled = downsampleTo16k(
-                    input,
-                    audioContext.sampleRate,
-                );
+                    const downsampled = downsampleTo16k(
+                        input,
+                        audioContext.sampleRate,
+                    );
 
-                const pcm = floatTo16BitPCM(downsampled);
+                    const pcm = floatTo16BitPCM(downsampled);
 
-                activeSocket.send(
-                    JSON.stringify({
+                    activeSocket.send(JSON.stringify({
                         type: "audio",
                         data: toBase64(pcm.buffer),
-                    }),
-                );
+                    }));
+                } catch (err) {
+                    console.error("Microphone processing failed:", err);
+                }
             };
 
-            source.connect(processor);
+            source.connect(highPass);
+            highPass.connect(processor);
             processor.connect(silentGain);
             silentGain.connect(audioContext.destination);
 
             socket = createVoiceConnection();
             socketRef.current = socket;
 
-            socket.onmessage = (event) => {
-                void handleServerMessage(event);
-            };
+            socket.onmessage = handleServerMessage;
 
             socket.onerror = () => {
-                setError(
-                    "Unable to connect to Nexora's voice server.",
-                );
+                setError("Unable to connect to Nexora's voice server.");
+            };
+
+            socket.onclose = () => {
+                if (
+                    socketRef.current === socket &&
+                    statusRef.current !== "disconnected"
+                ) {
+                    updateStatus("disconnected");
+                    updateVoiceState("idle");
+                    stopPlayback();
+
+                    setError(
+                        "Voice connection closed. Start a new session to reconnect.",
+                    );
+                }
             };
 
             await new Promise((resolve, reject) => {
@@ -544,40 +520,46 @@ export function useVoiceAgent() {
                     reject(new Error("Connection timed out."));
                 }, 20000);
 
-                socket.onopen = () => {
+                socket.addEventListener("open", () => {
                     clearTimeout(timeout);
                     resolve();
-                };
+                }, { once: true });
 
-                socket.onclose = () => {
+                socket.addEventListener("error", () => {
+                    clearTimeout(timeout);
+                    reject(new Error("Could not open the voice connection."));
+                }, { once: true });
+
+                socket.addEventListener("close", () => {
                     clearTimeout(timeout);
                     reject(new Error("Voice connection closed."));
-                };
+                }, { once: true });
             });
         } catch (err) {
-            setError(
-                err.message ||
-                "Unable to start voice conversation.",
-            );
+            setError(err.message || "Unable to start voice conversation.");
 
-            socket?.close();
+            if (socket) {
+                socket.onclose = null;
+                socket.close();
+            }
 
             streamRef.current?.getTracks().forEach((track) => {
                 track.stop();
             });
 
-            const activeContext = audioContextRef.current;
+            const context = audioContextRef.current;
 
-            if (activeContext && activeContext.state !== "closed") {
-                await activeContext.close();
+            if (context && context.state !== "closed") {
+                await context.close();
             }
 
+            socketRef.current = null;
             streamRef.current = null;
             audioContextRef.current = null;
             sourceRef.current = null;
-            workletRef.current = null;
+            processorRef.current = null;
+            filterRef.current = null;
             silentGainRef.current = null;
-            socketRef.current = null;
 
             stopPlayback();
             updateStatus("disconnected");
@@ -593,14 +575,20 @@ export function useVoiceAgent() {
     const stop = useCallback(async () => {
         const socket = socketRef.current;
 
+        // Update state first so a normal close is not treated as an error.
         updateStatus("disconnected");
         updateVoiceState("idle");
-
         stopPlayback();
 
         if (socket) {
+            socket.onclose = null;
+
             if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({ type: "end" }));
+                try {
+                    socket.send(JSON.stringify({ type: "end" }));
+                } catch {
+                    // The connection may already be closing.
+                }
             }
 
             socket.close();
@@ -610,18 +598,20 @@ export function useVoiceAgent() {
             track.stop();
         });
 
-        const audioContext = audioContextRef.current;
+        const context = audioContextRef.current;
 
-        if (audioContext && audioContext.state !== "closed") {
-            await audioContext.close();
+        if (context && context.state !== "closed") {
+            await context.close();
         }
 
         socketRef.current = null;
         streamRef.current = null;
         audioContextRef.current = null;
         sourceRef.current = null;
-        workletRef.current = null;
+        processorRef.current = null;
+        filterRef.current = null;
         silentGainRef.current = null;
+
         currentUserMessageRef.current = null;
         currentAssistantMessageRef.current = null;
     }, [stopPlayback, updateStatus, updateVoiceState]);
@@ -637,30 +627,25 @@ export function useVoiceAgent() {
         }
     }, [start, stop]);
 
-    const sendText = useCallback(
-        (text) => {
-            const trimmed = text.trim();
-            const socket = socketRef.current;
+    const sendText = useCallback((text) => {
+        const trimmed = text.trim();
+        const socket = socketRef.current;
 
-            if (
-                !trimmed ||
-                !socket ||
-                socket.readyState !== WebSocket.OPEN
-            ) {
-                return;
-            }
+        if (
+            !trimmed ||
+            !socket ||
+            socket.readyState !== WebSocket.OPEN
+        ) {
+            return;
+        }
 
-            addMessage("user", trimmed);
+        addMessage("user", trimmed);
 
-            socket.send(
-                JSON.stringify({
-                    type: "text",
-                    text: trimmed,
-                }),
-            );
-        },
-        [addMessage],
-    );
+        socket.send(JSON.stringify({
+            type: "text",
+            text: trimmed,
+        }));
+    }, [addMessage]);
 
     const clearConversation = useCallback(() => {
         setMessages([]);
@@ -670,8 +655,6 @@ export function useVoiceAgent() {
 
     useEffect(() => {
         return () => {
-            playbackGenerationRef.current += 1;
-
             socketRef.current?.close();
 
             streamRef.current?.getTracks().forEach((track) => {
@@ -689,8 +672,10 @@ export function useVoiceAgent() {
 
             playbackSourcesRef.current.clear();
 
-            if (audioContextRef.current?.state !== "closed") {
-                void audioContextRef.current?.close();
+            const context = audioContextRef.current;
+
+            if (context && context.state !== "closed") {
+                void context.close();
             }
         };
     }, []);
